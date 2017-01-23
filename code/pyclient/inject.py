@@ -83,14 +83,14 @@ def gettimewindow(secondssinceepoch, aggwindowlength):
     return dt+aggwindowlength-datetime.timedelta(seconds=dt.second%aggwindowlength.seconds)
 
 def senddata(iotHubSender, dbSender, messageid, deviceid, devicetime, category, measure1, measure2, sendtime, patterncode):
-    data="|".join([
+    data='{"id":"%s", "di":"%s", "dt":"%s", "c":"%s", "m1":%s, "m2":%s}' % (
         messageid,
         deviceid, 
         str(devicetime), 
         category,
         str(measure1),
-        str(measure2)])
-
+        str(measure2))
+    
     if use_print:
         print(str(data), sendtime, str((sendtime-devicetime)/1000), patterncode)
 
@@ -146,7 +146,7 @@ def createDeviceInIotHub(iotHubRegistryWriteConnectionString, deviceId):
     
 
 def main():
-    scriptusage='ingest.py [-r <random-seed>] [-b <batch-size>] -c <iot-hub-connection-string> (iot-hub-connection-string needs registry write access)'
+    scriptusage='inject.py [-r <random-seed>] [-b <batch-size>] -c <iot-hub-connection-string> (iot-hub-connection-string needs registry write access)'
     randomseed=34
     batchsize=300
     m1max=100
