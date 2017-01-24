@@ -2,107 +2,27 @@ use_print=True
 
 import base64
 import datetime
+from docdb_helper import DocDbHelper
 import getopt
-import hmac
-import hashlib
-import pydocumentdb.documents as documents
-import pydocumentdb.document_client as document_client
-import pydocumentdb.errors as errors
+#import hmac
+#import hashlib
+from iothub_helper import IotHubHelper
 import json
 import math
 import numpy
 import os
 import pandas
 import time
-import requests
-import urllib
+#import requests
+#import urllib
 import uuid
 import sys
-
-class IotHubSender:
-    API_VERSION = '2016-02-03'
-    TOKEN_VALID_SECS = 10
-    TOKEN_FORMAT_WITH_POLICY = 'SharedAccessSignature sig=%s&se=%s&skn=%s&sr=%s'
-    TOKEN_FORMAT_NO_POLICY = 'SharedAccessSignature sig=%s&se=%s&sr=%s'
-    USAGE_CREATE_DEVICE=0
-    USAGE_DEVICE_SENDS_MESSAGE=1
-
-    def __init__(self, connectionString=None):
-        if connectionString != None:
-            iotHost, keyName, keyValue = [sub[sub.index('=') + 1:] for sub in connectionString.split(";")]
-            self.iotHost = iotHost
-            self.initialKeyName = keyName
-            self.initialKeyValue = keyValue
-
-    def _buildExpiryOn(self):
-        return '%d' % (time.time() + self.TOKEN_VALID_SECS)
-    
-    def _buildIoTHubSasToken(self, deviceId, usage):
-        if usage==self.USAGE_CREATE_DEVICE:
-            keyValue=self.initialKeyValue
-        elif usage==self.USAGE_DEVICE_SENDS_MESSAGE:
-            keyValue=self.currentDeviceKey
-        else:
-            keyVale
-        resourceUri = '%s/devices/%s' % (self.iotHost, deviceId)
-        targetUri = resourceUri.lower()
-        expiryTime = self._buildExpiryOn()
-        toSign = '%s\n%s' % (targetUri, expiryTime)
-        key = base64.b64decode(keyValue.encode('utf-8'))
-        signature = urllib.request.pathname2url(
-            base64.b64encode(
-                hmac.HMAC(key, toSign.encode('utf-8'), hashlib.sha256).digest()
-            )
-        ).replace('/', '%2F')
-        if usage==self.USAGE_CREATE_DEVICE:
-            return self.TOKEN_FORMAT_WITH_POLICY % (signature, expiryTime, self.initialKeyName, targetUri)
-        elif usage==self.USAGE_DEVICE_SENDS_MESSAGE:
-            return self.TOKEN_FORMAT_NO_POLICY % (signature, expiryTime, targetUri)
-        else:
-            return None
-
-    def sendMsg(self, deviceId, message):
-        sasToken = self._buildIoTHubSasToken(deviceId, self.USAGE_DEVICE_SENDS_MESSAGE)
-        url = "https://%s/devices/%s/messages/events?api-version=%s" % (self.iotHost, deviceId, self.API_VERSION)
-        r = requests.post(url, headers={'Authorization': sasToken}, data=message)
-        return r.text, r.status_code
-
-    def createDevice(self, deviceId):
-        sasToken = self._buildIoTHubSasToken(deviceId, self.USAGE_CREATE_DEVICE)
-        url = "https://%s/devices/%s?api-version=%s" % (self.iotHost, deviceId, self.API_VERSION)
-        message = '{deviceId: "%s"}' % deviceId
-        r = requests.put(url, headers={'Content-Type': 'application/json', 'Authorization': sasToken}, data=message)
-        if r.status_code == 200:
-            response = json.loads(r.text)
-            self.currentDeviceKey=response['authentication']['symmetricKey']['primaryKey']
-        else:
-            self.currentDeviceKey=None
-            print('error: ' + str(r.status_code) + ' - ' + r.text)
-            raise Exception
-
-class DocDbSender:
-    def __init__(self, host=None, key=None, dbname=None, collectionname=None):
-        self.host = host
-        self.key = key
-        self.dbname = dbname
-        self.collectionname = collectionname
-        #may have to replace by something inspired from https://github.com/Azure/azure-documentdb-python/blob/master/test/query_execution_context_tests.py
-            #self.client = document_client.DocumentClient(self.host, {'masterKey': self.key})
-            #self.db = next((data for data in client.ReadDatabases() if data['id'] == self.dbname))
-            #self.collection = next((coll for coll in client.ReadCollections(db['_self']) if coll['id'] == self.collectionname))
-            #self.collection_link = "dbs/" + self.db['id'] + "/colls/" + self.collection['id']
-        self.collection_link="dbs/" + self.dbname + "/colls/" + self.collectionname
-        self.client = document_client.DocumentClient(self.host, {'masterKey': self.key})
-
-    def senddata(self, docs):
-        for d in docs:
-            self.client.CreateDocument(self.collection_link, d)
 
 def gettimewindow(secondssinceepoch, aggwindowlength):
     dt=datetime.datetime.fromtimestamp(int(secondssinceepoch))
     return dt+aggwindowlength-datetime.timedelta(seconds=dt.second%aggwindowlength.seconds)
 
-def senddata(iotHubSender, dbSender, messageid, deviceid, devicetime, category, measure1, measure2, sendtime, patterncode):
+def senddata(iotHubHelper, docdbhelper, messageid, deviceid, devicetime, category, measure1, measure2, sendtime, patterncode):
     data='{"id":"%s", "di":"%s", "dt":"%s", "c":"%s", "m1":%s, "m2":%s}' % (
         messageid,
         deviceid, 
@@ -113,9 +33,9 @@ def senddata(iotHubSender, dbSender, messageid, deviceid, devicetime, category, 
     if use_print:
         print(str(data), sendtime, str((sendtime-devicetime)/1000), patterncode)
     #write in IOT Hub
-    iotHubSender.sendMsg(deviceid, str(data).encode('utf-8'))
+    iotHubHelper.sendMsg(deviceid, str(data).encode('utf-8'))
 
-def sendaggdata(dbSender, deviceid, aggtype, aggdf):
+def sendaggdata(docdbhelper, deviceid, aggtype, aggdf):
     if use_print:
         print('aggregates of type ' + aggtype + ':')
         print(aggdf)
@@ -127,7 +47,7 @@ def sendaggdata(dbSender, deviceid, aggtype, aggdf):
             'sm1_inject_' + aggtype: int(r[0]), 
             'sm2_inject_' + aggtype: r[1]}
         aggdocs.append(aggdoc)
-    dbSender.senddata(aggdocs)
+    docdbhelper.senddata(aggdocs)
 
 def buildIoTHubSasToken(deviceId, iotHost, keyName, keyValue):
     
@@ -164,25 +84,6 @@ def main():
     basedelay=2*60*1000 #2 minutes
     aggwindowlength=datetime.timedelta(seconds=5)
 
-    iotHubConnectionString=os.environ['BOONTADATA_PAAS_iothub_registryrw_connectionstring']
-    if iotHubConnectionString==None:
-        print("please set BOONTADATA_PAAS_iothub_registryrw_connectionstring environment variable with an IOT Hub connetion string that registry Read/Write access")
-        print(scriptusage)
-        sys.exit(2)
-
-    docdb_host=os.environ['BOONTADATA_PAAS_docdb_host']
-    docdb_key=os.environ['BOONTADATA_PAAS_docdb_key']
-    docdb_dbname=os.environ['BOONTADATA_PAAS_docdb_dbname']
-    docdb_collectionname=os.environ['BOONTADATA_PAAS_docdb_collectionname']
-    if docdb_host==None or docdb_key==None or docdb_dbname==None or docdb_collectionname==None:
-        print("please set the following environment variables about DocumentDb")
-        print("- BOONTADATA_PAAS_docdb_host           : the host. Example: https://mydocumentdb.documents.azure.com:443/")
-        print("- BOONTADATA_PAAS_docdb_key            : the primaryKey or secondary key. Example: exf###obfuscated###NIuw==")
-        print("- BOONTADATA_PAAS_docdb_dbname         : the database name. Example: mydocdb")
-        print("- BOONTADATA_PAAS_docdb_collectionname : the collection name. Example: collectionname")
-        print(scriptusage)
-        sys.exit(2)
-
     deviceid=str(uuid.uuid4())
     
     try:
@@ -199,15 +100,14 @@ def main():
         elif opt in ("-b", "--batch-size"):
             batchsize = int(arg)
 
-    print("randomseed={}, batchsize={}, iotHubConnectionString={}".format( 
-        randomseed, batchsize, iotHubConnectionString))
+    print("randomseed={}, batchsize={}".format(randomseed, batchsize))
 
     #connect to IOT Hub
-    iotHubSender = IotHubSender(iotHubConnectionString)
-    iotHubSender.createDevice(deviceid)
+    iotHubHelper = IotHubHelper()
+    iotHubHelper.createDevice(deviceid)
 
     #connect to DocumentDB
-    dbSender=DocDbSender(docdb_host, docdb_key, docdb_dbname, docdb_collectionname)
+    docdbhelper=DocDbHelper()
 
     numpy.random.seed(randomseed)
     df = pandas.DataFrame({
@@ -242,7 +142,7 @@ def main():
         df.loc[i, 'devicetime'] = devicetime
         df.loc[i, 'sendtime'] = sendtime
         df.loc[i, 'patterncode'] = patterncode
-        senddata(iotHubSender, dbSender, r.messageid, deviceid, devicetime, r.category, r.measure1, r.measure2, sendtime, patterncode)
+        senddata(iotHubHelper, docdbhelper, r.messageid, deviceid, devicetime, r.category, r.measure1, r.measure2, sendtime, patterncode)
 
         if r.r2 < 0.05 :
             #resend a previous message
@@ -250,7 +150,7 @@ def main():
             resendindex = int(i*r.r1)
             sendtime = int(round(time.time()*1000))
             rbis = df.iloc[resendindex].copy()
-            senddata(iotHubSender, dbSender, rbis.messageid, deviceid, rbis.devicetime, rbis.category, rbis.measure1, rbis.measure2, sendtime, patterncode)
+            senddata(iotHubHelper, docdbhelper, rbis.messageid, deviceid, rbis.devicetime, rbis.category, rbis.measure1, rbis.measure2, sendtime, patterncode)
             rbis.sendtime=sendtime
             rbis.patterncode=patterncode
             df.loc[iappend] = rbis
@@ -263,13 +163,13 @@ def main():
     df['devicetimewindow'] = df.apply(lambda row: gettimewindow(row.devicetime/1000, aggwindowlength), axis=1)
     df['sendtimewindow'] = df.apply(lambda row: gettimewindow(row.sendtime/1000, aggwindowlength), axis=1)
 
-    sendaggdata(dbSender, deviceid, 'devicetime',
+    sendaggdata(docdbhelper, deviceid, 'devicetime',
         df
             .query('patterncode != \'re\'')
             .groupby(['devicetimewindow', 'category'])['measure1', 'measure2']
             .sum())
 
-    sendaggdata(dbSender, deviceid, 'sendtime',
+    sendaggdata(docdbhelper, deviceid, 'sendtime',
         df
             .query('patterncode != \'re\'')
             .groupby(['sendtimewindow', 'category'])['measure1', 'measure2']
