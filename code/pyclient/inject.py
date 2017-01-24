@@ -1,4 +1,3 @@
-use_documentDb=False
 use_print=True
 
 import base64
@@ -6,6 +5,9 @@ import datetime
 import getopt
 import hmac
 import hashlib
+import pydocumentdb.documents as documents
+import pydocumentdb.document_client as document_client
+import pydocumentdb.errors as errors
 import json
 import math
 import numpy
@@ -75,8 +77,26 @@ class IotHubSender:
             self.currentDeviceKey=response['authentication']['symmetricKey']['primaryKey']
         else:
             self.currentDeviceKey=None
-            print(r)
+            print('error: ' + str(r.status_code) + ' - ' + r.text)
             raise Exception
+
+class DocDbSender:
+    def __init__(self, host=None, key=None, dbname=None, collectionname=None):
+        self.host = host
+        self.key = key
+        self.dbname = dbname
+        self.collectionname = collectionname
+        #may have to replace by something inspired from https://github.com/Azure/azure-documentdb-python/blob/master/test/query_execution_context_tests.py
+            #self.client = document_client.DocumentClient(self.host, {'masterKey': self.key})
+            #self.db = next((data for data in client.ReadDatabases() if data['id'] == self.dbname))
+            #self.collection = next((coll for coll in client.ReadCollections(db['_self']) if coll['id'] == self.collectionname))
+            #self.collection_link = "dbs/" + self.db['id'] + "/colls/" + self.collection['id']
+        self.collection_link="dbs/" + self.dbname + "/colls/" + self.collectionname
+        self.client = document_client.DocumentClient(self.host, {'masterKey': self.key})
+
+    def senddata(self, docs):
+        for d in docs:
+            self.client.CreateDocument(self.collection_link, d)
 
 def gettimewindow(secondssinceepoch, aggwindowlength):
     dt=datetime.datetime.fromtimestamp(int(secondssinceepoch))
@@ -90,32 +110,24 @@ def senddata(iotHubSender, dbSender, messageid, deviceid, devicetime, category, 
         category,
         str(measure1),
         str(measure2))
-    
     if use_print:
         print(str(data), sendtime, str((sendtime-devicetime)/1000), patterncode)
-
     #write in IOT Hub
     iotHubSender.sendMsg(deviceid, str(data).encode('utf-8'))
-
-    if use_documentDb:
-        dbSender.execute("INSERT INTO raw_events "
-            + "(message_id, device_id, device_time, send_time, category, measure1, measure2) "
-            + "VALUES ('{}', '{}', {}, {}, '{}', {}, {})"
-            .format(messageid, deviceid, devicetime, sendtime, category, measure1, measure2))
 
 def sendaggdata(dbSender, deviceid, aggtype, aggdf):
     if use_print:
         print('aggregates of type ' + aggtype + ':')
         print(aggdf)
-    
-    if use_documentDb:
-        for i,r in aggdf.iterrows():
-            # upsert by inserting (cf http://www.planetcassandra.org/blog/how-to-do-an-upsert-in-cassandra/)
-            dbSender.execute("INSERT INTO agg_events "
-                + "(window_time, device_id, category, m1_sum_{0}_{1}, m2_sum_{0}_{1}) VALUES ('{2}', '{3}', '{4}', {5}, {6})"
-                .format('ingest', aggtype, 
-                    str(i[0]), deviceid, i[1],
-                    int(r[0]), r[1]))
+    aggdocs=[]
+    for i,r in aggdf.iterrows():
+        aggdoc = {'wt': str(i[0]), 
+            'di': deviceid, 
+            'c': i[1], 
+            'sm1_inject_' + aggtype: int(r[0]), 
+            'sm2_inject_' + aggtype: r[1]}
+        aggdocs.append(aggdoc)
+    dbSender.senddata(aggdocs)
 
 def buildIoTHubSasToken(deviceId, iotHost, keyName, keyValue):
     
@@ -141,24 +153,40 @@ def createDeviceInIotHub(iotHubRegistryWriteConnectionString, deviceId):
     response = json.loads(r.text)
     print(r.text)
     print(response['authentication']['symmetricKey']['primaryKey'])
-
     return r.text, r.status_code
-    
 
 def main():
-    scriptusage='inject.py [-r <random-seed>] [-b <batch-size>] -c <iot-hub-connection-string> (iot-hub-connection-string needs registry write access)'
+    scriptusage='inject.py [-r <random-seed>] [-b <batch-size>]'
     randomseed=34
     batchsize=300
     m1max=100
     m2max=500
     basedelay=2*60*1000 #2 minutes
     aggwindowlength=datetime.timedelta(seconds=5)
-    iotHubConnectionString=None
+
+    iotHubConnectionString=os.environ['BOONTADATA_PAAS_iothub_registryrw_connectionstring']
+    if iotHubConnectionString==None:
+        print("please set BOONTADATA_PAAS_iothub_registryrw_connectionstring environment variable with an IOT Hub connetion string that registry Read/Write access")
+        print(scriptusage)
+        sys.exit(2)
+
+    docdb_host=os.environ['BOONTADATA_PAAS_docdb_host']
+    docdb_key=os.environ['BOONTADATA_PAAS_docdb_key']
+    docdb_dbname=os.environ['BOONTADATA_PAAS_docdb_dbname']
+    docdb_collectionname=os.environ['BOONTADATA_PAAS_docdb_collectionname']
+    if docdb_host==None or docdb_key==None or docdb_dbname==None or docdb_collectionname==None:
+        print("please set the following environment variables about DocumentDb")
+        print("- BOONTADATA_PAAS_docdb_host           : the host. Example: https://mydocumentdb.documents.azure.com:443/")
+        print("- BOONTADATA_PAAS_docdb_key            : the primaryKey or secondary key. Example: exf###obfuscated###NIuw==")
+        print("- BOONTADATA_PAAS_docdb_dbname         : the database name. Example: mydocdb")
+        print("- BOONTADATA_PAAS_docdb_collectionname : the collection name. Example: collectionname")
+        print(scriptusage)
+        sys.exit(2)
 
     deviceid=str(uuid.uuid4())
     
     try:
-        opts, args = getopt.getopt(sys.argv[1:],"hr:b:c:",["random-seed=","batch-size=","iot-hub-connection-string"])
+        opts, args = getopt.getopt(sys.argv[1:],"hr:b:",["random-seed=","batch-size="])
     except getopt.GetoptError:
         print(scriptusage)
         sys.exit(2)
@@ -170,22 +198,16 @@ def main():
             randomseed = int(arg)
         elif opt in ("-b", "--batch-size"):
             batchsize = int(arg)
-        elif opt in ("-c", "--iot-hub-connection-string"):
-            iotHubConnectionString = arg
 
-    if iotHubConnectionString==None:
-        print(scriptusage)
-        sys.exit(2)
-
-    print("randomseed={}, batchsize={}, iotHubConnectionString={}", 
-        randomseed, batchsize, iotHubConnectionString)
+    print("randomseed={}, batchsize={}, iotHubConnectionString={}".format( 
+        randomseed, batchsize, iotHubConnectionString))
 
     #connect to IOT Hub
     iotHubSender = IotHubSender(iotHubConnectionString)
     iotHubSender.createDevice(deviceid)
 
     #connect to DocumentDB
-    dbSender=None #TODO
+    dbSender=DocDbSender(docdb_host, docdb_key, docdb_dbname, docdb_collectionname)
 
     numpy.random.seed(randomseed)
     df = pandas.DataFrame({
@@ -252,9 +274,6 @@ def main():
             .query('patterncode != \'re\'')
             .groupby(['sendtimewindow', 'category'])['measure1', 'measure2']
             .sum())
-
-    #disconnect from DocumentDB
-    #XXX
 
 if __name__ == '__main__':
     main()
