@@ -8,41 +8,36 @@ from pandas.io.json import json_normalize
 import time
 import uuid
 
+print("compare V170210c")
+
 #connect to DocumentDb
 docdbhelper = DocDbHelper()
 
 #Compare Injector and downstream
-inject_devicetime_results = docdbhelper.select("SELECT c.wt,c.di,c.c,c.sm1_inject_devicetime,c.sm2_inject_devicetime FROM c where c.sm1_inject_devicetime != null")
-inject_sendtime_results = docdbhelper.select("SELECT * FROM c where c.sm1_inject_sendtime != null")
-downstream_results = docdbhelper.select("SELECT * FROM c where c.sm1 != null")
+inject_devicetime_results = pandas.DataFrame(list(docdbhelper.select(
+    "SELECT c.wt as window_time, c.di as device_id, c.c as category, "
+    + "c.sm1_inject_devicetime as m1_sum_inject_devicetime, "
+    + "c.sm2_inject_devicetime as m2_sum_inject_devicetime "
+    + "FROM c where c.sm1_inject_devicetime != null")))
 
-df = pandas.DataFrame(columns=('window_time', 'device_id', 'category',
-    'm1_sum_inject_sendtime', 'm1_sum_inject_devicetime', 'm1_sum_downstream',
-    'm2_sum_inject_sendtime', 'm2_sum_inject_devicetime', 'm2_sum_downstream'))
+inject_sendtime_results = pandas.DataFrame(list(docdbhelper.select(
+    "SELECT c.wt as window_time, c.di as device_id, c.c as category,"
+    + "c.sm1_inject_sendtime as m1_sum_inject_sendtime,"
+    + "c.sm2_inject_sendtime as m2_sum_inject_sendtime "
+    + "FROM c where c.sm1_inject_sendtime != null")))
 
-i=1
-for d in inject_devicetime_results:
-    print(d['wt'], d['di'], d['c'], d['sm1_inject_devicetime'], d['sm2_inject_devicetime'])
-    df[['window_time', 'device_id', 'category',
-        'm1_sum_inject_sendtime', 'm2_sum_inject_sendtime'
-        ]].radd([d['wt'], d['di'], d['c'], d['sm1_inject_devicetime'], d['sm2_inject_devicetime']])
-    i += 1
+downstream_results = pandas.DataFrame(list(docdbhelper.select(
+    "SELECT c.wt as window_time, c.di as device_id, c.c as category,"
+    + "c.sm1 as m1_sum_downstream,"
+    + "c.sm2 as m2_sum_downstream "
+    + "FROM c where c.sm1 != null")))
+downstream_results["window_time"] = downstream_results.apply(lambda row: row.window_time.replace('T', ' ').replace('Z', ''), axis=1)
 
-print(df)
-exit(0)
+df = pandas.merge(inject_devicetime_results, inject_sendtime_results, on=['category', 'device_id', 'window_time'])
+df = pandas.merge(df, downstream_results, on=['category', 'device_id', 'window_time'])
 
-
-result = session.execute(
-    "SELECT window_time, device_id, category, "
-    + "m1_sum_inject_sendtime, m1_sum_inject_devicetime, m1_sum_downstream, "
-    + "m2_sum_inject_sendtime, m2_sum_inject_devicetime, m2_sum_downstream "
-    + "FROM agg_events ")
-df = pandas.DataFrame(result[0])
 df['delta_m1_sum_injectdevice_downstream'] = df.apply(lambda row: row.m1_sum_inject_devicetime - row.m1_sum_downstream, axis=1)
 df['delta_m2_sum_injectdevice_downstream'] = df.apply(lambda row: row.m2_sum_inject_devicetime - row.m2_sum_downstream, axis=1)
-
-#disconnect from Cassandra
-cluster.shutdown()
 
 pandas.set_option('display.height', 1000)
 pandas.set_option('display.max_rows', 500)
