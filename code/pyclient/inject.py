@@ -1,121 +1,53 @@
-use_documentDb=False
 use_print=True
 
 import base64
 import datetime
+from docdb_helper import DocDbHelper
 import getopt
-import hmac
-import hashlib
+#import hmac
+#import hashlib
+from iothub_helper import IotHubHelper
 import json
 import math
 import numpy
 import os
 import pandas
 import time
-import requests
-import urllib
+#import requests
+#import urllib
 import uuid
 import sys
-
-class IotHubSender:
-    API_VERSION = '2016-02-03'
-    TOKEN_VALID_SECS = 10
-    TOKEN_FORMAT_WITH_POLICY = 'SharedAccessSignature sig=%s&se=%s&skn=%s&sr=%s'
-    TOKEN_FORMAT_NO_POLICY = 'SharedAccessSignature sig=%s&se=%s&sr=%s'
-    USAGE_CREATE_DEVICE=0
-    USAGE_DEVICE_SENDS_MESSAGE=1
-
-    def __init__(self, connectionString=None):
-        if connectionString != None:
-            iotHost, keyName, keyValue = [sub[sub.index('=') + 1:] for sub in connectionString.split(";")]
-            self.iotHost = iotHost
-            self.initialKeyName = keyName
-            self.initialKeyValue = keyValue
-
-    def _buildExpiryOn(self):
-        return '%d' % (time.time() + self.TOKEN_VALID_SECS)
-    
-    def _buildIoTHubSasToken(self, deviceId, usage):
-        if usage==self.USAGE_CREATE_DEVICE:
-            keyValue=self.initialKeyValue
-        elif usage==self.USAGE_DEVICE_SENDS_MESSAGE:
-            keyValue=self.currentDeviceKey
-        else:
-            keyVale
-        resourceUri = '%s/devices/%s' % (self.iotHost, deviceId)
-        targetUri = resourceUri.lower()
-        expiryTime = self._buildExpiryOn()
-        toSign = '%s\n%s' % (targetUri, expiryTime)
-        key = base64.b64decode(keyValue.encode('utf-8'))
-        signature = urllib.request.pathname2url(
-            base64.b64encode(
-                hmac.HMAC(key, toSign.encode('utf-8'), hashlib.sha256).digest()
-            )
-        ).replace('/', '%2F')
-        if usage==self.USAGE_CREATE_DEVICE:
-            return self.TOKEN_FORMAT_WITH_POLICY % (signature, expiryTime, self.initialKeyName, targetUri)
-        elif usage==self.USAGE_DEVICE_SENDS_MESSAGE:
-            return self.TOKEN_FORMAT_NO_POLICY % (signature, expiryTime, targetUri)
-        else:
-            return None
-
-    def sendMsg(self, deviceId, message):
-        sasToken = self._buildIoTHubSasToken(deviceId, self.USAGE_DEVICE_SENDS_MESSAGE)
-        url = "https://%s/devices/%s/messages/events?api-version=%s" % (self.iotHost, deviceId, self.API_VERSION)
-        r = requests.post(url, headers={'Authorization': sasToken}, data=message)
-        return r.text, r.status_code
-
-    def createDevice(self, deviceId):
-        sasToken = self._buildIoTHubSasToken(deviceId, self.USAGE_CREATE_DEVICE)
-        url = "https://%s/devices/%s?api-version=%s" % (self.iotHost, deviceId, self.API_VERSION)
-        message = '{deviceId: "%s"}' % deviceId
-        r = requests.put(url, headers={'Content-Type': 'application/json', 'Authorization': sasToken}, data=message)
-        if r.status_code == 200:
-            response = json.loads(r.text)
-            self.currentDeviceKey=response['authentication']['symmetricKey']['primaryKey']
-        else:
-            self.currentDeviceKey=None
-            print(r)
-            raise Exception
 
 def gettimewindow(secondssinceepoch, aggwindowlength):
     dt=datetime.datetime.fromtimestamp(int(secondssinceepoch))
     return dt+aggwindowlength-datetime.timedelta(seconds=dt.second%aggwindowlength.seconds)
 
-def senddata(iotHubSender, dbSender, messageid, deviceid, devicetime, category, measure1, measure2, sendtime, patterncode):
-    data="|".join([
+def senddata(iotHubHelper, docdbhelper, messageid, deviceid, devicetime, category, measure1, measure2, sendtime, patterncode):
+    data='{"id":"%s", "di":"%s", "dt":"%s", "c":"%s", "m1":%s, "m2":%s}' % (
         messageid,
         deviceid, 
         str(devicetime), 
         category,
         str(measure1),
-        str(measure2)])
-
+        str(measure2))
     if use_print:
         print(str(data), sendtime, str((sendtime-devicetime)/1000), patterncode)
-
     #write in IOT Hub
-    iotHubSender.sendMsg(deviceid, str(data).encode('utf-8'))
+    iotHubHelper.sendMsg(deviceid, str(data).encode('utf-8'))
 
-    if use_documentDb:
-        dbSender.execute("INSERT INTO raw_events "
-            + "(message_id, device_id, device_time, send_time, category, measure1, measure2) "
-            + "VALUES ('{}', '{}', {}, {}, '{}', {}, {})"
-            .format(messageid, deviceid, devicetime, sendtime, category, measure1, measure2))
-
-def sendaggdata(dbSender, deviceid, aggtype, aggdf):
+def sendaggdata(docdbhelper, deviceid, aggtype, aggdf):
     if use_print:
         print('aggregates of type ' + aggtype + ':')
         print(aggdf)
-    
-    if use_documentDb:
-        for i,r in aggdf.iterrows():
-            # upsert by inserting (cf http://www.planetcassandra.org/blog/how-to-do-an-upsert-in-cassandra/)
-            dbSender.execute("INSERT INTO agg_events "
-                + "(window_time, device_id, category, m1_sum_{0}_{1}, m2_sum_{0}_{1}) VALUES ('{2}', '{3}', '{4}', {5}, {6})"
-                .format('ingest', aggtype, 
-                    str(i[0]), deviceid, i[1],
-                    int(r[0]), r[1]))
+    aggdocs=[]
+    for i,r in aggdf.iterrows():
+        aggdoc = {'wt': str(i[0]), 
+            'di': deviceid, 
+            'c': i[1], 
+            'sm1_inject_' + aggtype: int(r[0]), 
+            'sm2_inject_' + aggtype: r[1]}
+        aggdocs.append(aggdoc)
+    docdbhelper.senddata(aggdocs)
 
 def buildIoTHubSasToken(deviceId, iotHost, keyName, keyValue):
     
@@ -141,24 +73,21 @@ def createDeviceInIotHub(iotHubRegistryWriteConnectionString, deviceId):
     response = json.loads(r.text)
     print(r.text)
     print(response['authentication']['symmetricKey']['primaryKey'])
-
     return r.text, r.status_code
-    
 
 def main():
-    scriptusage='ingest.py [-r <random-seed>] [-b <batch-size>] -c <iot-hub-connection-string> (iot-hub-connection-string needs registry write access)'
+    scriptusage='inject.py [-r <random-seed>] [-b <batch-size>]'
     randomseed=34
     batchsize=300
     m1max=100
     m2max=500
     basedelay=2*60*1000 #2 minutes
     aggwindowlength=datetime.timedelta(seconds=5)
-    iotHubConnectionString=None
 
     deviceid=str(uuid.uuid4())
     
     try:
-        opts, args = getopt.getopt(sys.argv[1:],"hr:b:c:",["random-seed=","batch-size=","iot-hub-connection-string"])
+        opts, args = getopt.getopt(sys.argv[1:],"hr:b:",["random-seed=","batch-size="])
     except getopt.GetoptError:
         print(scriptusage)
         sys.exit(2)
@@ -170,22 +99,15 @@ def main():
             randomseed = int(arg)
         elif opt in ("-b", "--batch-size"):
             batchsize = int(arg)
-        elif opt in ("-c", "--iot-hub-connection-string"):
-            iotHubConnectionString = arg
 
-    if iotHubConnectionString==None:
-        print(scriptusage)
-        sys.exit(2)
-
-    print("randomseed={}, batchsize={}, iotHubConnectionString={}", 
-        randomseed, batchsize, iotHubConnectionString)
+    print("randomseed={}, batchsize={}".format(randomseed, batchsize))
 
     #connect to IOT Hub
-    iotHubSender = IotHubSender(iotHubConnectionString)
-    iotHubSender.createDevice(deviceid)
+    iotHubHelper = IotHubHelper()
+    iotHubHelper.createDevice(deviceid)
 
     #connect to DocumentDB
-    dbSender=None #TODO
+    docdbhelper=DocDbHelper()
 
     numpy.random.seed(randomseed)
     df = pandas.DataFrame({
@@ -220,7 +142,7 @@ def main():
         df.loc[i, 'devicetime'] = devicetime
         df.loc[i, 'sendtime'] = sendtime
         df.loc[i, 'patterncode'] = patterncode
-        senddata(iotHubSender, dbSender, r.messageid, deviceid, devicetime, r.category, r.measure1, r.measure2, sendtime, patterncode)
+        senddata(iotHubHelper, docdbhelper, r.messageid, deviceid, devicetime, r.category, r.measure1, r.measure2, sendtime, patterncode)
 
         if r.r2 < 0.05 :
             #resend a previous message
@@ -228,7 +150,7 @@ def main():
             resendindex = int(i*r.r1)
             sendtime = int(round(time.time()*1000))
             rbis = df.iloc[resendindex].copy()
-            senddata(iotHubSender, dbSender, rbis.messageid, deviceid, rbis.devicetime, rbis.category, rbis.measure1, rbis.measure2, sendtime, patterncode)
+            senddata(iotHubHelper, docdbhelper, rbis.messageid, deviceid, rbis.devicetime, rbis.category, rbis.measure1, rbis.measure2, sendtime, patterncode)
             rbis.sendtime=sendtime
             rbis.patterncode=patterncode
             df.loc[iappend] = rbis
@@ -236,25 +158,22 @@ def main():
 
         time.sleep(r.r3/10)
 
-    # calculate aggregations from the sender point of view and send them to Cassandra
+    # calculate aggregations from the sender point of view and send them to DocumentDB
     df = df.drop(['r1', 'r2', 'r3'], axis=1)
     df['devicetimewindow'] = df.apply(lambda row: gettimewindow(row.devicetime/1000, aggwindowlength), axis=1)
     df['sendtimewindow'] = df.apply(lambda row: gettimewindow(row.sendtime/1000, aggwindowlength), axis=1)
 
-    sendaggdata(dbSender, deviceid, 'devicetime',
+    sendaggdata(docdbhelper, deviceid, 'devicetime',
         df
             .query('patterncode != \'re\'')
             .groupby(['devicetimewindow', 'category'])['measure1', 'measure2']
             .sum())
 
-    sendaggdata(dbSender, deviceid, 'sendtime',
+    sendaggdata(docdbhelper, deviceid, 'sendtime',
         df
             .query('patterncode != \'re\'')
             .groupby(['sendtimewindow', 'category'])['measure1', 'measure2']
             .sum())
-
-    #disconnect from DocumentDB
-    #XXX
 
 if __name__ == '__main__':
     main()
