@@ -158,7 +158,7 @@ def main():
 
         time.sleep(r.r3/10)
 
-    # calculate aggregations from the sender point of view and send them to Cassandra
+    # calculate aggregations from the sender point of view and send them to DocumentDB
     df = df.drop(['r1', 'r2', 'r3'], axis=1)
     df['devicetimewindow'] = df.apply(lambda row: gettimewindow(row.devicetime/1000, aggwindowlength), axis=1)
     df['sendtimewindow'] = df.apply(lambda row: gettimewindow(row.sendtime/1000, aggwindowlength), axis=1)

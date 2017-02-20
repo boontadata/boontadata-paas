@@ -8,7 +8,7 @@ from pandas.io.json import json_normalize
 import time
 import uuid
 
-print("compare V170210c")
+print("compare V170220a")
 
 #connect to DocumentDb
 docdbhelper = DocDbHelper()
@@ -30,6 +30,7 @@ downstream_results = pandas.DataFrame(list(docdbhelper.select(
     "SELECT c.wt as window_time, c.di as device_id, c.c as category,"
     + "c.sm1 as m1_sum_downstream,"
     + "c.sm2 as m2_sum_downstream "
+    + ", c.nbevents as nbevents_downstream "
     + "FROM c where c.sm1 != null")))
 downstream_results["window_time"] = downstream_results.apply(lambda row: row.window_time.replace('T', ' ').replace('Z', ''), axis=1)
 
@@ -39,7 +40,6 @@ df = pandas.merge(df, downstream_results, on=['category', 'device_id', 'window_t
 df['delta_m1_sum_injectdevice_downstream'] = df.apply(lambda row: row.m1_sum_inject_devicetime - row.m1_sum_downstream, axis=1)
 df['delta_m2_sum_injectdevice_downstream'] = df.apply(lambda row: row.m2_sum_inject_devicetime - row.m2_sum_downstream, axis=1)
 
-pandas.set_option('display.height', 1000)
 pandas.set_option('display.max_rows', 500)
 pandas.set_option('display.max_columns', 50)
 pandas.set_option('display.width', 200)
@@ -52,6 +52,7 @@ print(df
         'delta_m1_sum_injectdevice_downstream', 'm1_sum_inject_sendtime', 
         'm2_sum_inject_devicetime', 'm2_sum_downstream', 
         'delta_m2_sum_injectdevice_downstream', 'm2_sum_inject_sendtime',
+        'nbevents_downstream',
         'device_id']])
 print()
 
