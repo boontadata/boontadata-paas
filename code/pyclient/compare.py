@@ -8,7 +8,7 @@ from pandas.io.json import json_normalize
 import time
 import uuid
 
-print("compare V170220a")
+print("compare V170221a")
 
 #connect to DocumentDb
 docdbhelper = DocDbHelper()
@@ -34,8 +34,8 @@ downstream_results = pandas.DataFrame(list(docdbhelper.select(
     + "FROM c where c.sm1 != null")))
 downstream_results["window_time"] = downstream_results.apply(lambda row: row.window_time.replace('T', ' ').replace('Z', ''), axis=1)
 
-df = pandas.merge(inject_devicetime_results, inject_sendtime_results, on=['category', 'device_id', 'window_time'])
-df = pandas.merge(df, downstream_results, on=['category', 'device_id', 'window_time'])
+df = pandas.merge(inject_devicetime_results, inject_sendtime_results, how='left', on=['category', 'device_id', 'window_time'])
+df = pandas.merge(df, downstream_results, how='left', on=['category', 'device_id', 'window_time'])
 
 df['delta_m1_sum_injectdevice_downstream'] = df.apply(lambda row: row.m1_sum_inject_devicetime - row.m1_sum_downstream, axis=1)
 df['delta_m2_sum_injectdevice_downstream'] = df.apply(lambda row: row.m2_sum_inject_devicetime - row.m2_sum_downstream, axis=1)
