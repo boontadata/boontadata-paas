@@ -17,10 +17,13 @@ export BOONTADATA_PAAS_docdb_collectionname="mycoll"
 
 ## to be integrated in bash scripts
 
-run pyclient: 
+### run scenario
 
 ```
-docker run -d --name pyclient $BOONTADATA_DOCKER_REGISTRY/boontadata-paas/pyclient:0.1
-docker exec -ti pyclient bash
+cd $BOONTADATA_PAAS/code
+. start_pyclient.sh
+docker exec -ti pyclient python truncate_docdb.py
+docker exec -ti pyclient python inject.py
+docker exec -ti pyclient python compare.py
 docker rm -f pyclient
 ```
